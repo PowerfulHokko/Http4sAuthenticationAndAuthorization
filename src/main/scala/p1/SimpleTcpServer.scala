@@ -3,7 +3,7 @@ package p1
 import cats.effect.{ExitCode, IO, IOApp, Resource}
 import com.comcast.ip4s.{ipv4, port}
 import fs2.io.net.Network
-import fs2.io.net.tls.TLSParameters
+import fs2.io.net.tls.{TLSContext}
 import org.http4s.{AuthedRoutes, Entity, HttpRoutes, Request, Response}
 import org.http4s.dsl.io.*
 import org.http4s.ember.server.EmberServerBuilder
@@ -14,7 +14,7 @@ import org.http4s.server.middleware.authentication.DigestAuth
 import org.http4s.server.{AuthMiddleware, Router, Server}
 import org.typelevel.log4cats.slf4j.Slf4jFactory
 
-import java.io.File
+import java.io.FileInputStream
 import java.security.KeyStore
 import java.time.LocalDateTime
 import javax.net.ssl.{KeyManagerFactory, SSLContext}
@@ -48,7 +48,7 @@ object Codecs {
 case class User(id: Long, name: String)
 
 val passMap: Map[String, (Long, String, String)] = Map[String, (Long, String, String)](
-  "jurgen" -> (1L, "127.0.0.1", "pw123")
+  "jurgen" -> (1L, "realm", "pw123")
 )
 
 object DigestAuthImpl{
@@ -70,17 +70,17 @@ object DigestAuthImpl{
 
 }
 
-object SimpleTcpServer extends IOApp with com.typesafe.scalalogging.LazyLogging{
+object SimpleTcpServer extends IOApp{
 
   import Codecs._
 
   private def digestRoutes = AuthedRoutes.of[User, IO]{
     case req@GET -> Root / "login" as user =>
       Ok(s"Welcome $user")
-    
+
   }
 
-  private val digestService = DigestAuthImpl.middleware("127.0.0.1").map(wrapper => wrapper(digestRoutes))
+  private val digestService = DigestAuthImpl.middleware("realm").map(wrapper => wrapper(digestRoutes))
 
   def routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
@@ -105,42 +105,48 @@ object SimpleTcpServer extends IOApp with com.typesafe.scalalogging.LazyLogging{
     for {
       secureRoutes <- Resource.eval(digestService) // Lift IO[HttpRoutes[IO]] into Resource
       combinedRoutes = Router(
-        "/" -> routes,
-        "/s" -> secureRoutes
+        "/o" -> routes,
+        "" -> secureRoutes
       )
     } yield combinedRoutes
 
-  val SSLContext: Option[SSLContext] = {
-    Try {
-      val ksFile = new File("src/main/resources/sec/ks/myserver.jks")
-      val keystorePass = "hokkokeystore".toCharArray
-      val keyStore = KeyStore.getInstance(ksFile, keystorePass)
-      val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm)
-      keyManagerFactory.init(keyStore, keystorePass)
-
-      val sslContext = javax.net.ssl.SSLContext.getInstance("TLS")
-      sslContext.init(keyManagerFactory.getKeyManagers, null, null)
-      sslContext
-    } match
-      case Failure(exception) =>
-        println(exception.getMessage)
-        None
-      case Success(value) => Some(value)
-  }
-
-  private val tls = Network[IO].tlsContext.fromSSLContext(SSLContext.orNull)
-
   private val serverResource: Resource[IO, Server] = {
-    implicit val logging: Slf4jFactory[IO] = Slf4jFactory.create[IO]
-    logger.info("Server starting")
-
 
     def logHeadersMiddleware(routes: HttpRoutes[IO]): HttpRoutes[IO] = HttpRoutes.of[IO] {
       case req@_ =>
         // Log the headers of every request
-        logger.info(s"Received request with headers: ${req.headers.headers.mkString("\n")}")
         routes(req).getOrElseF(InternalServerError()) // Forward the request to the next route in the chain
     }
+
+    // Create an SSLContext manually
+    def loadSslContext(keyStorePath: String, keyStorePassword: String): SSLContext = {
+      val keyStore = KeyStore.getInstance("PKCS12")
+      val keyStoreStream = new FileInputStream(keyStorePath)
+      keyStore.load(keyStoreStream, keyStorePassword.toCharArray)
+      keyStoreStream.close()
+
+      val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm)
+      keyManagerFactory.init(keyStore, keyStorePassword.toCharArray)
+
+      val sslContext = SSLContext.getInstance("TLS")
+      sslContext.init(keyManagerFactory.getKeyManagers, null, null)
+      sslContext
+    }
+
+    // Convert SSLContext into a TLSContext
+    def createTlsContext: TLSContext[IO] = {
+      val sslContext = Try(loadSslContext("src/main/resources/server-keystore.p12", "password")) match {
+        case Success(ctx) =>
+          println("Successfully loaded SSLContext")
+          ctx
+        case Failure(ex) =>
+          println(s"Failed to load SSLContext: ${ex.getMessage}")
+          throw ex
+      }
+      TLSContext.Builder.forAsync[IO].fromSSLContext(sslContext)
+    }
+
+    implicit val logging: Slf4jFactory[IO] = Slf4jFactory.create[IO]
 
     router.flatMap { app =>
       val logged = logHeadersMiddleware(app)
@@ -148,18 +154,21 @@ object SimpleTcpServer extends IOApp with com.typesafe.scalalogging.LazyLogging{
         .default[IO]
         .withHost(ipv4"0.0.0.0")
         .withPort(port"8080")
-        .withTLS(tls, TLSParameters.Default)
-        .withHttp2
         .withConnectionErrorHandler{ case error =>
-          IO.println(error.getMessage).as(Response(status = BadRequest, entity = Entity.utf8String(error.getMessage)))
+          error.printStackTrace()
+          IO(Response(status = BadRequest, entity = Entity.utf8String(error.getMessage)))
         }
         .withHttpApp(logged.orNotFound)
+        .withTLS(createTlsContext)
         .build
     }
 
   }
 
   override def run(args: List[String]): IO[ExitCode] =
-    serverResource.useForever
+    serverResource.useForever.handleError{e =>
+      e.printStackTrace()
+      ExitCode.Error
+    }
 
 }
