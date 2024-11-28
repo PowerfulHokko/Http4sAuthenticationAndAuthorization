@@ -24,22 +24,11 @@ libraryDependencies ++= Seq(
 
 //logger
 libraryDependencies ++= Seq(
-  "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5",
-  "ch.qos.logback" % "logback-classic" % "1.5.6" exclude("org.slf4j", "slf4j-simple"),
-  "org.typelevel" % "log4cats-core_3" % "2.7.0" exclude("org.slf4j", "slf4j-simple"),
-  "org.typelevel" % "log4cats-slf4j_3" % "2.7.0" exclude("org.slf4j", "slf4j-simple")
+  "org.typelevel" %% "log4cats-core"    % "2.7.0",  // Only if you want to Support Any Backend
+  "org.typelevel" %% "log4cats-slf4j"   % "2.7.0",  // Direct Slf4j Support - Recommended
+  "org.slf4j" % "slf4j-api" % "1.7.36",
+  "ch.qos.logback" % "logback-classic" % "1.5.6"
 )
-//libraryDependencies ++= Seq(
-//  "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5",
-//  "ch.qos.logback" % "logback-classic" % "1.5.6" exclude("org.slf4j", "slf4j-simple")
-//)
-//
-//libraryDependencies ++= Seq(
-//  "org.typelevel" % "log4cats-core_3" % "2.7.0", // Adjust the version as needed
-//  "org.typelevel" % "log4cats-slf4j_3" % "2.7.0", // Adjust the version as needed
-////  "org.slf4j" % "slf4j-api" % "2.0.12", // Adjust the version as needed
-////  "org.slf4j" % "slf4j-simple" % "2.0.13" // Optional, for a simple SLF4J binding
-//)
 
 //cats
 libraryDependencies += ("org.typelevel" %% "cats-core" % "2.12.0")
